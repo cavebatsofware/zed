@@ -77,7 +77,7 @@ use gpui::{
     Task, WeakEntity, Window,
 };
 use language::{
-    Buffer, BufferEvent, Capability, CodeLabel, CursorShape, Language, LanguageName,
+    Buffer, BufferEvent, Capability, CodeLabel, CursorShape, File as _, Language, LanguageName,
     LanguageRegistry, PointUtf16, ToOffset, ToPointUtf16, Toolchain, ToolchainMetadata,
     ToolchainScope, Transaction, Unclipped, language_settings::InlayHintKind,
     proto::split_operations,
@@ -1017,6 +1017,7 @@ impl Project {
         client.add_entity_request_handler(Self::handle_open_buffer_by_id);
         client.add_entity_request_handler(Self::handle_open_buffer_by_path);
         client.add_entity_request_handler(Self::handle_open_new_buffer);
+        client.add_entity_request_handler(Self::handle_open_image_by_path);
         client.add_entity_message_handler(Self::handle_create_buffer_for_peer);
         client.add_entity_message_handler(Self::handle_toggle_lsp_logs);
         client.add_entity_message_handler(Self::handle_create_image_for_peer);
@@ -4967,6 +4968,46 @@ impl Project {
         let peer_id = envelope.original_sender_id()?;
 
         Project::respond_to_open_buffer_request(this, buffer, peer_id, &mut cx)
+    }
+
+    async fn handle_open_image_by_path(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::OpenImageByPath>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::OpenImageResponse> {
+        let peer_id = envelope.original_sender_id()?;
+        let worktree_id = WorktreeId::from_proto(envelope.payload.worktree_id);
+        let path = RelPath::from_proto(&envelope.payload.path)?;
+        let project_id = envelope.payload.project_id;
+
+        // Load the raw file bytes from the worktree
+        let (worktree_store, client) = this.read_with(&cx, |this, _| {
+            (this.worktree_store.clone(), this.collab_client.clone())
+        })?;
+
+        let worktree = worktree_store
+            .read_with(&cx, |store, cx| store.worktree_for_id(worktree_id, cx))?
+            .context("worktree not found")?;
+
+        let load_task = worktree.update(&mut cx, |worktree, cx| {
+            worktree.load_binary_file(path.as_ref(), cx)
+        })?;
+
+        let loaded_file = load_task.await?;
+        let content = loaded_file.content;
+        let file = loaded_file.file;
+
+        // Convert file to proto while we still have sync access
+        let proto_file = worktree.read_with(&cx, |_worktree, cx| file.to_proto(cx))?;
+
+        // Use shared helper to send the image to the peer
+        let client: AnyProtoClient = client.into();
+        let image_id =
+            image_store::send_image_to_peer(proto_file, content, project_id, peer_id, &client)?;
+
+        Ok(proto::OpenImageResponse {
+            image_id: image_id.to_proto(),
+        })
     }
 
     async fn handle_create_image_for_peer(

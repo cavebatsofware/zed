@@ -16,7 +16,6 @@ use project::{
     buffer_store::{BufferStore, BufferStoreEvent},
     debugger::{breakpoint_store::BreakpointStore, dap_store::DapStore},
     git_store::GitStore,
-    image_store::ImageId,
     lsp_store::log_store::{self, GlobalLogStore, LanguageServerKind},
     project_settings::SettingsObserver,
     search::SearchQuery,
@@ -544,55 +543,15 @@ impl HeadlessProject {
 
         // Convert file to proto while we still have sync access
         let proto_file = worktree.read_with(&cx, |_worktree, cx| file.to_proto(cx))?;
-        // Generate a unique image ID using timestamp and random data
-        let image_id = ImageId::from(
-            std::num::NonZeroU64::new(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64,
-            )
-            .unwrap(),
-        );
 
-        // Guess the image format
-        let format = ::image::guess_format(&content)
-            .map(|f| format!("{:?}", f).to_lowercase())
-            .unwrap_or_else(|_| "unknown".to_string());
-
-        // Send the image state first
-        let state = proto::ImageState {
-            id: image_id.to_proto(),
-            file: Some(proto_file),
-            content_size: content.len() as u64,
-            format,
-        };
-
-        session.send(proto::CreateImageForPeer {
+        // Use shared helper to send the image to the peer
+        let image_id = project::image_store::send_image_to_peer(
+            proto_file,
+            content,
             project_id,
-            peer_id: Some(REMOTE_SERVER_PEER_ID),
-            variant: Some(proto::create_image_for_peer::Variant::State(state)),
-        })?;
-
-        // Send the image data in chunks
-        const CHUNK_SIZE: usize = 256 * 1024; // 256KB chunks
-        let chunks: Vec<_> = content.chunks(CHUNK_SIZE).collect();
-        let total_chunks = chunks.len();
-
-        for (i, chunk) in chunks.into_iter().enumerate() {
-            let is_last = i == total_chunks - 1;
-            session.send(proto::CreateImageForPeer {
-                project_id,
-                peer_id: Some(REMOTE_SERVER_PEER_ID),
-                variant: Some(proto::create_image_for_peer::Variant::Chunk(
-                    proto::ImageChunk {
-                        image_id: image_id.to_proto(),
-                        data: chunk.to_vec(),
-                        is_last,
-                    },
-                )),
-            })?;
-        }
+            REMOTE_SERVER_PEER_ID,
+            &session,
+        )?;
 
         Ok(proto::OpenImageResponse {
             image_id: image_id.to_proto(),

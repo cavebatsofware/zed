@@ -899,6 +899,69 @@ fn create_gpui_image(content: Vec<u8>) -> anyhow::Result<Arc<gpui::Image>> {
     )))
 }
 
+/// Sends an image to a peer by sending it in chunks via CreateImageForPeer messages.
+/// This is shared logic used by both remote servers and collab host projects to send images to clients.
+/// The caller is responsible for loading the file and converting it to proto format.
+pub fn send_image_to_peer(
+    proto_file: proto::File,
+    content: Vec<u8>,
+    project_id: u64,
+    peer_id: proto::PeerId,
+    client: &AnyProtoClient,
+) -> Result<ImageId> {
+    // Generate a unique image ID using timestamp
+    let image_id = ImageId::from(
+        std::num::NonZeroU64::new(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        )
+        .unwrap(),
+    );
+
+    // Guess the image format
+    let format = ::image::guess_format(&content)
+        .map(|f| format!("{:?}", f).to_lowercase())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    // Send the image state first
+    let state = proto::ImageState {
+        id: image_id.to_proto(),
+        file: Some(proto_file),
+        content_size: content.len() as u64,
+        format,
+    };
+
+    client.send(proto::CreateImageForPeer {
+        project_id,
+        peer_id: Some(peer_id),
+        variant: Some(proto::create_image_for_peer::Variant::State(state)),
+    })?;
+
+    // Send the image data in chunks
+    const CHUNK_SIZE: usize = 256 * 1024; // 256KB chunks
+    let chunks: Vec<_> = content.chunks(CHUNK_SIZE).collect();
+    let total_chunks = chunks.len();
+
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let is_last = i == total_chunks - 1;
+        client.send(proto::CreateImageForPeer {
+            project_id,
+            peer_id: Some(peer_id),
+            variant: Some(proto::create_image_for_peer::Variant::Chunk(
+                proto::ImageChunk {
+                    image_id: image_id.to_proto(),
+                    data: chunk.to_vec(),
+                    is_last,
+                },
+            )),
+        })?;
+    }
+
+    Ok(image_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

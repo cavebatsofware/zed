@@ -4975,8 +4975,12 @@ impl Project {
         envelope: TypedEnvelope<proto::OpenImageByPath>,
         mut cx: AsyncApp,
     ) -> Result<proto::OpenImageResponse> {
-        log::info!("Project::handle_open_image_by_path called");
+        log::error!("=== Project::handle_open_image_by_path HANDLER INVOKED ===");
         let peer_id = envelope.original_sender_id()?;
+        log::error!(
+            "=== handle_open_image_by_path: peer_id extracted: {:?} ===",
+            peer_id
+        );
         let worktree_id = WorktreeId::from_proto(envelope.payload.worktree_id);
         let path = RelPath::from_proto(&envelope.payload.path)?;
         let project_id = envelope.payload.project_id;

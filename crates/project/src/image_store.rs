@@ -681,14 +681,21 @@ impl ImageStoreImpl for Entity<RemoteImageStore> {
         worktree: Entity<Worktree>,
         cx: &mut Context<ImageStore>,
     ) -> Task<Result<Entity<ImageItem>>> {
+        log::info!("RemoteImageStore::open_image called for path: {:?}", path);
         let worktree_id = worktree.read(cx).id().to_proto();
         let (project_id, client) = {
             let store = self.read(cx);
             (store.project_id, store.upstream_client.clone())
         };
+        log::info!(
+            "RemoteImageStore sending request: project_id={}, worktree_id={}",
+            project_id,
+            worktree_id
+        ); // ADD THIS
         let remote_store = self.clone();
 
         cx.spawn(async move |image_store, cx| {
+            log::info!("RemoteImageStore about to send OpenImageByPath request");
             let response = client
                 .request(rpc::proto::OpenImageByPath {
                     project_id,
@@ -696,6 +703,10 @@ impl ImageStoreImpl for Entity<RemoteImageStore> {
                     path: path.to_proto(),
                 })
                 .await?;
+            log::info!(
+                "RemoteImageStore received response with image_id: {}",
+                response.image_id
+            );
 
             let image_id = ImageId::from(
                 NonZeroU64::new(response.image_id).context("invalid image_id in response")?,

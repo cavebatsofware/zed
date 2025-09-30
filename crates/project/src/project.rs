@@ -4975,10 +4975,18 @@ impl Project {
         envelope: TypedEnvelope<proto::OpenImageByPath>,
         mut cx: AsyncApp,
     ) -> Result<proto::OpenImageResponse> {
+        log::info!("Project::handle_open_image_by_path called");
         let peer_id = envelope.original_sender_id()?;
         let worktree_id = WorktreeId::from_proto(envelope.payload.worktree_id);
         let path = RelPath::from_proto(&envelope.payload.path)?;
         let project_id = envelope.payload.project_id;
+        log::info!(
+            "handle_open_image_by_path: peer_id={:?}, worktree_id={:?}, path={:?}, project_id={}",
+            peer_id,
+            worktree_id,
+            path,
+            project_id
+        );
 
         // Load the raw file bytes from the worktree
         let (worktree_store, client) = this.read_with(&cx, |this, _| {
@@ -5002,9 +5010,14 @@ impl Project {
 
         // Use shared helper to send the image to the peer
         let client: AnyProtoClient = client.into();
+        log::info!("handle_open_image_by_path: about to send image to peer");
         let image_id =
             image_store::send_image_to_peer(proto_file, content, project_id, peer_id, &client)?;
 
+        log::info!(
+            "handle_open_image_by_path: image sent successfully, image_id={}",
+            image_id
+        );
         Ok(proto::OpenImageResponse {
             image_id: image_id.to_proto(),
         })

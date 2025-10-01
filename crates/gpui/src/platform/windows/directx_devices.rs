@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use regex::Regex;
 use util::ResultExt;
 use windows::Win32::{
     Foundation::HMODULE,

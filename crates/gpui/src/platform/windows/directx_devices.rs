@@ -519,7 +519,7 @@ fn calculate_gpu_score(gpu_type: &GpuType, mobility: &GpuMobility, device_name: 
         GpuType::Integrated { vendor } => {
             score += 100; // Base score for integrated
             match vendor {
-                GpuVendor::Amd => score += 50, // Usually better than Intel integrated
+                GpuVendor::Amd => score += 50,
                 GpuVendor::Intel => score += 30,
                 _ => {}
             }
@@ -564,7 +564,7 @@ fn select_auto(candidates: &[GpuCandidate]) -> Result<&GpuCandidate> {
             .min_by_key(|c| match (&c.gpu_type, &c.mobility) {
                 (GpuType::Integrated { .. }, _) => 0,                    // Integrated first
                 (GpuType::Dedicated { .. }, GpuMobility::Mobile) => 1,   // Mobile dedicated second  
-                (GpuType::Dedicated { .. }, GpuMobility::Desktop) => 2,  // Desktop dedicated last (unlikely)
+                (GpuType::Dedicated { .. }, GpuMobility::Desktop) => 2,  // Fallback to desktop dedicated
                 _ => 3,                                                   // Unknown last
             })
     }

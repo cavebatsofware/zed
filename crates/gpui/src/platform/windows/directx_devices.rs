@@ -21,7 +21,7 @@ use windows::Win32::{
     },
 };
 
-const INTEGRATED_GPU_MEMORY_THRESHOLD: u64 = 512 * 1024 * 1024;
+const INTEGRATED_GPU_MEMORY_THRESHOLD: usize = 512 * 1024 * 1024;
 const VENDOR_ID_NVIDIA: u32 = 0x10DE;
 const VENDOR_ID_AMD: u32 = 0x1002;
 const VENDOR_ID_INTEL: u32 = 0x8086;

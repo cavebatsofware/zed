@@ -365,41 +365,39 @@ fn detect_gpu_mobility(device_name: &str, desc: &DXGI_ADAPTER_DESC1) -> GpuMobil
 
 fn classify_gpu_by_explicit_markers(device_name: &str) -> Option<GpuMobility> {
     let name_lower = device_name.to_lowercase();
-    
+
     // NVIDIA explicit mobile markers
-    if name_lower.contains("nvidia") || name_lower.contains("geforce") {
-        if name_lower.contains("max-q") || 
-           name_lower.contains("mobile") || 
-           name_lower.contains("laptop") {
-            return Some(GpuMobility::Mobile);
-        }
+    if Regex::new(r"\b(nvidia|geforce)\b.*\b(max-q|mobile|laptop)\b")
+        .unwrap()
+        .is_match(&name_lower)
+    {
+        return Some(GpuMobility::Mobile);
     }
-    
-    // AMD explicit mobile markers  
-    if name_lower.contains("amd") || name_lower.contains("radeon") {
-        if name_lower.contains("mobile") {
-            return Some(GpuMobility::Mobile);
-        }
-        // Match mobile GPU patterns: "RX 6800M", "RX 7700S", etc.
-        use std::sync::OnceLock;
-        static AMD_MOBILE_REGEX: OnceLock<regex::Regex> = OnceLock::new();
-        let regex = AMD_MOBILE_REGEX.get_or_init(|| {
-            regex::Regex::new(r"\brx\s*\d{4}[ms]\b").unwrap()
-        });
-        if regex.is_match(&name_lower) {
-            return Some(GpuMobility::Mobile);
-        }
+
+    // AMD explicit mobile keyword
+    if Regex::new(r"\b(amd|radeon)\b.*\bmobile\b")
+        .unwrap()
+        .is_match(&name_lower)
+    {
+        return Some(GpuMobility::Mobile);
     }
-    
+
+    // AMD mobile suffix patterns (RX 6800M, RX 7700S)
+    if Regex::new(r"\brx\s*\d{4}[ms]\b")
+        .unwrap()
+        .is_match(&name_lower)
+    {
+        return Some(GpuMobility::Mobile);
+    }
+
     // Intel explicit mobile markers
-    if name_lower.contains("intel") {
-        if name_lower.contains("iris xe") ||        // Mobile integrated
-           name_lower.contains("uhd graphics") ||   // Mobile integrated
-           (name_lower.contains("arc") && name_lower.contains("m")) { // Arc A770M
-            return Some(GpuMobility::Mobile);
-        }
+    if Regex::new(r"\bintel\b.*(iris\s+xe|uhd\s+graphics|arc\s+\w+m\b)")
+        .unwrap()
+        .is_match(&name_lower)
+    {
+        return Some(GpuMobility::Mobile);
     }
-    
+
     None
 }
 
@@ -465,15 +463,11 @@ fn classify_by_advanced_heuristics(device_name: &str, desc: &DXGI_ADAPTER_DESC1)
     }
     
     // Legacy cards that might have low VRAM but are desktop
-    const LEGACY_DESKTOP_PATTERNS: &[&str] = &[
-        "gtx 750", "gtx 760", "gtx 960", "gtx 970", "gtx 980", // Older desktop cards
-        "rx 580", "rx 570", "rx 480", "rx 470", // Older AMD desktop cards
-    ];
-    
-    for pattern in LEGACY_DESKTOP_PATTERNS {
-        if name_lower.contains(pattern) {
-            return GpuMobility::Desktop;
-        }
+    if Regex::new(r"\b(gtx\s+(750|760|96[08]|970|980)|rx\s+[4-5][7-8]0)\b")
+        .unwrap()
+        .is_match(&name_lower)
+    {
+        return GpuMobility::Desktop;
     }
     
     // Default fallback based on VRAM

@@ -3080,6 +3080,7 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "askpass",
  "clap",
  "collections",
  "core-foundation 0.10.0",
@@ -3216,6 +3217,7 @@ dependencies = [
  "indoc",
  "ordered-float 2.10.1",
  "rustc-hash 2.1.1",
+ "serde",
  "strum 0.27.1",
  "workspace-hack",
 ]
@@ -5125,7 +5127,6 @@ dependencies = [
  "client",
  "gpui",
  "language",
- "project",
  "workspace-hack",
 ]
 
@@ -5178,6 +5179,7 @@ dependencies = [
  "language",
  "log",
  "ordered-float 2.10.1",
+ "postage",
  "pretty_assertions",
  "project",
  "regex",
@@ -12961,9 +12963,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.11.1"
+version = "1.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b544ef1b4eac5dc2db33ea63606ae9ffcfac26c1416a2806ae0bf5f56b201191"
+checksum = "8b5288124840bee7b386bc413c487869b360b2b4ec421ea56425128692f2a82c"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -12973,9 +12975,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.9"
+version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "809e8dc61f6de73b46c85f4c96486310fe304c434cfa43669d7b40f711150908"
+checksum = "833eb9ce86d40ef33cb1306d8accf7bc8ec2bfea4355cbdebb3df68b40925cad"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -13065,7 +13067,6 @@ dependencies = [
  "gpui",
  "gpui_tokio",
  "http_client",
- "image",
  "json_schema_store",
  "language",
  "language_extension",
@@ -16905,9 +16906,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
-version = "0.25.6"
+version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7cf18d43cbf0bfca51f657132cc616a5097edc4424d538bae6fa60142eaf9f0"
+checksum = "78f873475d258561b06f1c595d93308a7ed124d9977cb26b148c2084a4a3cc87"
 dependencies = [
  "cc",
  "regex",
@@ -17710,6 +17711,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "menu",
  "multi_buffer",
  "nvim-rs",
  "parking_lot",
@@ -20216,7 +20218,6 @@ dependencies = [
  "agent_ui",
  "anyhow",
  "ashpd 0.11.0",
- "askpass",
  "assets",
  "assistant_tools",
  "audio",
@@ -20342,7 +20343,6 @@ dependencies = [
  "url",
  "urlencoding",
  "util",
- "util_macros",
  "uuid",
  "vim",
  "vim_mode_setting",
@@ -20731,7 +20731,9 @@ dependencies = [
  "language_model",
  "language_models",
  "languages",
+ "log",
  "node_runtime",
+ "ordered-float 2.10.1",
  "paths",
  "project",
  "prompt_store",
@@ -20748,6 +20750,7 @@ dependencies = [
  "workspace-hack",
  "zeta",
  "zeta2",
+ "zlog",
 ]
 
 [[package]]

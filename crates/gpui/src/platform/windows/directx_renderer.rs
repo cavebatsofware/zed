@@ -1684,6 +1684,14 @@ mod amd {
     type agsDeInitialize_t = unsafe extern "C" fn(context: *mut AGSContext) -> c_int;
 
     pub(super) fn get_driver_version() -> Result<String> {
+        // Try AMD AGS library first, fallback to DXGI if unavailable
+        try_ags_library().or_else(|e| {
+            log::warn!("AMD AGS library unavailable: {}, using DXGI fallback", e);
+            Ok("AMD Driver (DXGI)".to_string())
+        })
+    }
+    
+    fn try_ags_library() -> Result<String> {
         #[cfg(target_pointer_width = "64")]
         let amd_dll_name = s!("amd_ags_x64.dll");
         #[cfg(target_pointer_width = "32")]

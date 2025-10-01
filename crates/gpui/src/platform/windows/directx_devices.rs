@@ -14,12 +14,17 @@ use windows::Win32::{
             D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
         },
         Dxgi::{
-            CreateDXGIFactory2, DXGI_ADAPTER_DESC1, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
-            DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER, 
-            IDXGIAdapter1, IDXGIFactory6,
+            CreateDXGIFactory2, DXGI_ADAPTER_DESC1, DXGI_CREATE_FACTORY_DEBUG,
+            DXGI_CREATE_FACTORY_FLAGS, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+            DXGI_GPU_PREFERENCE_MINIMUM_POWER, IDXGIAdapter1, IDXGIFactory6,
         },
     },
 };
+
+const INTEGRATED_GPU_MEMORY_THRESHOLD: u64 = 512 * 1024 * 1024;
+const VENDOR_ID_NVIDIA: u32 = 0x10DE;
+const VENDOR_ID_AMD: u32 = 0x1002;
+const VENDOR_ID_INTEL: u32 = 0x8086;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GpuPreference {
@@ -79,7 +84,9 @@ pub fn load_gpu_preference() -> GpuPreference {
     if let Ok(pref) = std::env::var("GPUI_GPU_PREFERENCE") {
         match pref.to_lowercase().as_str() {
             "high_performance" | "performance" | "dedicated" => GpuPreference::HighPerformance,
-            "power_efficient" | "efficiency" | "integrated" | "power" => GpuPreference::PowerEfficient,
+            "power_efficient" | "efficiency" | "integrated" | "power" => {
+                GpuPreference::PowerEfficient
+            }
             gpu_name => GpuPreference::Specific(gpu_name.to_string()),
         }
     } else {
@@ -144,7 +151,10 @@ impl DirectXDevices {
                 }
                 _ => unreachable!(),
             }
-            (device, context.unwrap())
+            (
+                device,
+                context.ok_or_else(|| anyhow::anyhow!("Failed to create device context"))?,
+            )
         };
 
         Ok(Self {
@@ -189,25 +199,30 @@ fn get_dxgi_factory(debug_layer_available: bool) -> Result<IDXGIFactory6> {
 #[inline]
 fn get_adapter(dxgi_factory: &IDXGIFactory6, debug_layer_available: bool) -> Result<IDXGIAdapter1> {
     let preference = load_gpu_preference();
-    
+
     // Enumerate all GPU candidates
     let candidates = enumerate_gpu_candidates(dxgi_factory, debug_layer_available)
         .context("Failed to enumerate GPU candidates")?;
-    
+
     if candidates.is_empty() {
         return Err(anyhow::anyhow!("No suitable GPUs found"));
     }
-    
+
     // Log available GPUs
     log_available_gpus(&candidates);
-    
+
     // Select GPU based on preference
-    let selected = select_gpu_with_preference(&candidates, &preference)
-        .context("Failed to select GPU")?;
-    
-    log::info!("Selected GPU: {} (Score: {}, Type: {:?}, Mobility: {:?})", 
-               selected.info.device_name, selected.score, selected.gpu_type, selected.mobility);
-    
+    let selected =
+        select_gpu_with_preference(&candidates, &preference).context("Failed to select GPU")?;
+
+    log::info!(
+        "Selected GPU: {} (Score: {}, Type: {:?}, Mobility: {:?})",
+        selected.info.device_name,
+        selected.score,
+        selected.gpu_type,
+        selected.mobility
+    );
+
     Ok(selected.adapter.clone())
 }
 
@@ -265,45 +280,54 @@ fn get_device(
     }
 }
 
-fn enumerate_gpu_candidates(dxgi_factory: &IDXGIFactory6, debug_layer_available: bool) -> Result<Vec<GpuCandidate>> {
+fn enumerate_gpu_candidates(
+    dxgi_factory: &IDXGIFactory6,
+    debug_layer_available: bool,
+) -> Result<Vec<GpuCandidate>> {
     let mut candidates = Vec::new();
     let mut seen_adapters = std::collections::HashSet::new();
-    
+
     // Try both performance preferences to enumerate all adapters
-    for preference in [DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER] {
+    for preference in [
+        DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+        DXGI_GPU_PREFERENCE_MINIMUM_POWER,
+    ] {
         for adapter_index in 0.. {
-            let adapter: IDXGIAdapter1 = match unsafe { 
-                dxgi_factory.EnumAdapterByGpuPreference(adapter_index, preference) 
-            } {
-                Ok(adapter) => adapter,
-                Err(_) => break, // No more adapters for this preference
-            };
-            
+            let adapter: IDXGIAdapter1 =
+                match unsafe { dxgi_factory.EnumAdapterByGpuPreference(adapter_index, preference) }
+                {
+                    Ok(adapter) => adapter,
+                    Err(_) => break, // No more adapters for this preference
+                };
+
             let desc = match unsafe { adapter.GetDesc1() } {
                 Ok(desc) => desc,
                 Err(_) => continue,
             };
-            
+
             // Skip duplicates (same adapter enumerated with different preferences)
             let adapter_key = (desc.VendorId, desc.DeviceId, desc.SubSysId, desc.Revision);
             if seen_adapters.contains(&adapter_key) {
                 continue;
             }
             seen_adapters.insert(adapter_key);
-            
+
             // Check if adapter supports DirectX 11
-            if get_device(&adapter, None, None, debug_layer_available).log_err().is_none() {
+            if get_device(&adapter, None, None, debug_layer_available)
+                .log_err()
+                .is_none()
+            {
                 continue;
             }
-            
+
             let candidate = analyze_gpu_candidate(adapter, desc)?;
             candidates.push(candidate);
         }
     }
-    
+
     // Sort by score (highest first)
     candidates.sort_by_key(|c| std::cmp::Reverse(c.score));
-    
+
     Ok(candidates)
 }
 
@@ -311,26 +335,20 @@ fn analyze_gpu_candidate(adapter: IDXGIAdapter1, desc: DXGI_ADAPTER_DESC1) -> Re
     let device_name = String::from_utf16_lossy(&desc.Description)
         .trim_matches(char::from(0))
         .to_string();
-    
-    let vendor = match desc.VendorId {
-        0x10DE => GpuVendor::Nvidia,
-        0x1002 => GpuVendor::Amd,
-        0x8086 => GpuVendor::Intel,
-        id => GpuVendor::Unknown(id),
-    };
-    
+
+    let vendor = classify_vendor(desc.VendorId);
     let memory_mb = (desc.DedicatedVideoMemory / (1024 * 1024)) as u32;
-    let is_integrated = desc.DedicatedVideoMemory < 512 * 1024 * 1024; // < 512MB
-    
+    let is_integrated = desc.DedicatedVideoMemory < INTEGRATED_GPU_MEMORY_THRESHOLD;
+
     let gpu_type = if is_integrated {
         GpuType::Integrated { vendor }
     } else {
         GpuType::Dedicated { vendor, memory_mb }
     };
-    
+
     let mobility = detect_gpu_mobility(&device_name, &desc);
     let score = calculate_gpu_score(&gpu_type, &mobility, &device_name);
-    
+
     let info = GpuInfo {
         device_name,
         vendor_id: desc.VendorId,
@@ -338,7 +356,7 @@ fn analyze_gpu_candidate(adapter: IDXGIAdapter1, desc: DXGI_ADAPTER_DESC1) -> Re
         dedicated_memory: desc.DedicatedVideoMemory as u64,
         shared_memory: desc.SharedSystemMemory as u64,
     };
-    
+
     Ok(GpuCandidate {
         adapter,
         info,
@@ -348,52 +366,33 @@ fn analyze_gpu_candidate(adapter: IDXGIAdapter1, desc: DXGI_ADAPTER_DESC1) -> Re
     })
 }
 
+fn classify_vendor(vendor_id: u32) -> GpuVendor {
+    match vendor_id {
+        VENDOR_ID_NVIDIA => GpuVendor::Nvidia,
+        VENDOR_ID_AMD => GpuVendor::Amd,
+        VENDOR_ID_INTEL => GpuVendor::Intel,
+        id => GpuVendor::Unknown(id),
+    }
+}
+
 fn detect_gpu_mobility(device_name: &str, desc: &DXGI_ADAPTER_DESC1) -> GpuMobility {
-    // Step 1: Check explicit mobile/desktop markers (highest confidence)
-    if let Some(mobility) = classify_gpu_by_explicit_markers(device_name) {
-        return mobility;
-    }
-    
-    // Step 2: Check against known model databases (high confidence)
-    if let Some(mobility) = classify_by_known_models(device_name) {
-        return mobility;
-    }
-    
-    // Step 3: Use advanced heuristics (lower confidence)
-    classify_by_advanced_heuristics(device_name, desc)
+    classify_gpu_by_explicit_markers(device_name)
+        .or_else(|| classify_by_known_models(device_name))
+        .unwrap_or_else(|| classify_by_advanced_heuristics(device_name, desc))
 }
 
 fn classify_gpu_by_explicit_markers(device_name: &str) -> Option<GpuMobility> {
     let name_lower = device_name.to_lowercase();
 
-    // NVIDIA explicit mobile markers
-    if Regex::new(r"\b(nvidia|geforce)\b.*\b(max-q|mobile|laptop)\b")
-        .unwrap()
-        .is_match(&name_lower)
-    {
-        return Some(GpuMobility::Mobile);
-    }
+    let nvidia_mobile = Regex::new(r"\b(nvidia|geforce)\b.*\b(max-q|mobile|laptop)\b").ok()?;
+    let amd_mobile_keyword = Regex::new(r"\b(amd|radeon)\b.*\bmobile\b").ok()?;
+    let amd_mobile_suffix = Regex::new(r"\brx\s*\d{4}[ms]\b").ok()?;
+    let intel_mobile = Regex::new(r"\bintel\b.*(iris\s+xe|uhd\s+graphics|arc\s+\w+m\b)").ok()?;
 
-    // AMD explicit mobile keyword
-    if Regex::new(r"\b(amd|radeon)\b.*\bmobile\b")
-        .unwrap()
-        .is_match(&name_lower)
-    {
-        return Some(GpuMobility::Mobile);
-    }
-
-    // AMD mobile suffix patterns (RX 6800M, RX 7700S)
-    if Regex::new(r"\brx\s*\d{4}[ms]\b")
-        .unwrap()
-        .is_match(&name_lower)
-    {
-        return Some(GpuMobility::Mobile);
-    }
-
-    // Intel explicit mobile markers
-    if Regex::new(r"\bintel\b.*(iris\s+xe|uhd\s+graphics|arc\s+\w+m\b)")
-        .unwrap()
-        .is_match(&name_lower)
+    if nvidia_mobile.is_match(&name_lower)
+        || amd_mobile_keyword.is_match(&name_lower)
+        || amd_mobile_suffix.is_match(&name_lower)
+        || intel_mobile.is_match(&name_lower)
     {
         return Some(GpuMobility::Mobile);
     }
@@ -403,89 +402,66 @@ fn classify_gpu_by_explicit_markers(device_name: &str) -> Option<GpuMobility> {
 
 fn classify_by_known_models(device_name: &str) -> Option<GpuMobility> {
     let name_lower = device_name.to_lowercase();
-    
-    // AMD Mobile Models (clear M/S suffixes)
-    const AMD_MOBILE_PATTERNS: &[&str] = &[
-        // RX 7000 mobile
-        "rx 7700s", "rx 7600s", "rx 7600m xt", "rx 7600m", 
-        // RX 6000 mobile
-        "rx 6800m", "rx 6700m", "rx 6600m",
-    ];
-    
-    // Intel Arc Desktop Models
-    const INTEL_DESKTOP_PATTERNS: &[&str] = &[
-        "arc a770", "arc a750", "arc a580", "arc a380", "arc a310",
-    ];
-    
-    // Intel Mobile Models (clear M suffix)
-    const INTEL_MOBILE_PATTERNS: &[&str] = &[
-        "arc a770m", "arc a730m", "arc a570m", "arc a550m", "arc a530m", "arc a370m", "arc a350m",
-    ];
-    
-    // Check mobile patterns first
-    for pattern in AMD_MOBILE_PATTERNS.iter().chain(INTEL_MOBILE_PATTERNS.iter()) {
-        if name_lower.contains(pattern) {
-            return Some(GpuMobility::Mobile);
-        }
+
+    let amd_known_mobile = Regex::new(r"\brx\s*(7[67]00s|7600m(\s+xt)?|6[6-8]00m)\b").ok()?;
+    let intel_arc_mobile = Regex::new(r"\barc\s+a[3-7][3-7]0m\b").ok()?;
+    let intel_arc_desktop = Regex::new(r"\barc\s+a(770|750|580|380|310)\b").ok()?;
+
+    if amd_known_mobile.is_match(&name_lower) || intel_arc_mobile.is_match(&name_lower) {
+        return Some(GpuMobility::Mobile);
     }
-    
-    // Check desktop patterns
-    for pattern in INTEL_DESKTOP_PATTERNS.iter() {
-        if name_lower.contains(pattern) {
-            return Some(GpuMobility::Desktop);
-        }
+
+    if intel_arc_desktop.is_match(&name_lower) {
+        return Some(GpuMobility::Desktop);
     }
-    
+
     None
 }
 
 fn classify_by_advanced_heuristics(device_name: &str, desc: &DXGI_ADAPTER_DESC1) -> GpuMobility {
     let name_lower = device_name.to_lowercase();
     let vram_gb = desc.DedicatedVideoMemory / (1024 * 1024 * 1024);
-    
-    // Integrated GPU detection
-    if desc.DedicatedVideoMemory < 512 * 1024 * 1024 || name_lower.contains("integrated") {
+
+    if desc.DedicatedVideoMemory < INTEGRATED_GPU_MEMORY_THRESHOLD
+        || name_lower.contains("integrated")
+    {
         return GpuMobility::Integrated;
     }
-    
-    // Handle NVIDIA RTX 30/40 series ambiguity (same names for desktop/mobile)
+
     if name_lower.contains("rtx") {
-        // Use VRAM and naming context clues
         if name_lower.contains("ti") && vram_gb >= 8 {
-            return GpuMobility::Desktop; // Ti variants usually desktop with high VRAM
+            return GpuMobility::Desktop;
         }
         if vram_gb >= 12 {
-            return GpuMobility::Desktop; // High VRAM suggests desktop
+            return GpuMobility::Desktop;
         }
         if vram_gb <= 6 {
-            return GpuMobility::Mobile; // Lower VRAM suggests mobile
+            return GpuMobility::Mobile;
         }
     }
-    
-    // Legacy cards that might have low VRAM but are desktop
-    if Regex::new(r"\b(gtx\s+(750|760|96[08]|970|980)|rx\s+[4-5][7-8]0)\b")
-        .unwrap()
-        .is_match(&name_lower)
+
+    if let Ok(legacy_desktop) = Regex::new(r"\b(gtx\s+(750|760|96[08]|970|980)|rx\s+[4-5][7-8]0)\b")
     {
-        return GpuMobility::Desktop;
+        if legacy_desktop.is_match(&name_lower) {
+            return GpuMobility::Desktop;
+        }
     }
-    
-    // Default fallback based on VRAM
+
     if vram_gb >= 6 {
         GpuMobility::Desktop
     } else {
-        GpuMobility::Unknown // Prefer unknown over wrong classification
+        GpuMobility::Unknown
     }
 }
 
 fn calculate_gpu_score(gpu_type: &GpuType, mobility: &GpuMobility, device_name: &str) -> u32 {
     let mut score = 0u32;
-    
+
     match gpu_type {
         GpuType::Dedicated { vendor, memory_mb } => {
             score += 1000; // Base score for dedicated GPU
             score += memory_mb / 10; // Memory bonus (100MB = 10 points)
-            
+
             // Vendor bonuses (for gaming/graphics workloads)
             match vendor {
                 GpuVendor::Nvidia => score += 200, // CUDA, better driver support
@@ -493,7 +469,7 @@ fn calculate_gpu_score(gpu_type: &GpuType, mobility: &GpuMobility, device_name: 
                 GpuVendor::Intel => score += 100, // Arc GPUs
                 _ => {}
             }
-            
+
             // Performance tier detection
             let name_lower = device_name.to_lowercase();
             if name_lower.contains("rtx") || name_lower.contains("gtx") {
@@ -502,7 +478,7 @@ fn calculate_gpu_score(gpu_type: &GpuType, mobility: &GpuMobility, device_name: 
             if name_lower.contains("4090") || name_lower.contains("4080") {
                 score += 500; // High-end bonus
             }
-            
+
             // Mobility adjustment
             match mobility {
                 GpuMobility::Desktop => score += 300, // Desktop preference for performance
@@ -510,7 +486,7 @@ fn calculate_gpu_score(gpu_type: &GpuType, mobility: &GpuMobility, device_name: 
                 _ => {}
             }
         }
-        
+
         GpuType::Integrated { vendor } => {
             score += 100; // Base score for integrated
             match vendor {
@@ -520,47 +496,52 @@ fn calculate_gpu_score(gpu_type: &GpuType, mobility: &GpuMobility, device_name: 
             }
         }
     }
-    
+
     score
 }
 
-fn select_gpu_with_preference<'a>(candidates: &'a [GpuCandidate], preference: &GpuPreference) -> Result<&'a GpuCandidate> {
+fn select_gpu_with_preference<'a>(
+    candidates: &'a [GpuCandidate],
+    preference: &GpuPreference,
+) -> Result<&'a GpuCandidate> {
     if candidates.is_empty() {
         return Err(anyhow::anyhow!("No GPU candidates available"));
     }
-    
+
     let selected = match preference {
         GpuPreference::Auto => select_auto(candidates),
         GpuPreference::HighPerformance => select_high_performance(candidates),
         GpuPreference::PowerEfficient => select_power_efficient(candidates),
         GpuPreference::Specific(name) => select_specific(candidates, name),
     }?;
-    
+
     Ok(selected)
 }
 
 fn select_auto(candidates: &[GpuCandidate]) -> Result<&GpuCandidate> {
     // Check if we have any desktop dedicated GPUs (indicates desktop system)
     let has_desktop_dedicated = candidates.iter().any(|c| {
-        matches!(c.gpu_type, GpuType::Dedicated { .. }) && 
-        matches!(c.mobility, GpuMobility::Desktop)
+        matches!(c.gpu_type, GpuType::Dedicated { .. })
+            && matches!(c.mobility, GpuMobility::Desktop)
     });
-    
+
     if has_desktop_dedicated {
         // Desktop system: prefer dedicated desktop GPUs for performance
-        candidates.iter()
+        candidates
+            .iter()
             .filter(|c| matches!(c.gpu_type, GpuType::Dedicated { .. }))
             .filter(|c| matches!(c.mobility, GpuMobility::Desktop))
             .max_by_key(|c| c.score)
             .or_else(|| candidates.iter().max_by_key(|c| c.score))
     } else {
         // Laptop system: prefer power efficiency (integrated first, then mobile)
-        candidates.iter()
+        candidates
+            .iter()
             .min_by_key(|c| match (&c.gpu_type, &c.mobility) {
-                (GpuType::Integrated { .. }, _) => 0,                    // Integrated first
-                (GpuType::Dedicated { .. }, GpuMobility::Mobile) => 1,   // Mobile dedicated second  
-                (GpuType::Dedicated { .. }, GpuMobility::Desktop) => 2,  // Fallback to desktop dedicated
-                _ => 3,                                                   // Unknown last
+                (GpuType::Integrated { .. }, _) => 0, // Integrated first
+                (GpuType::Dedicated { .. }, GpuMobility::Mobile) => 1, // Mobile dedicated second
+                (GpuType::Dedicated { .. }, GpuMobility::Desktop) => 2, // Fallback to desktop dedicated
+                _ => 3,                                                 // Unknown last
             })
     }
     .ok_or_else(|| anyhow::anyhow!("No suitable GPU found"))
@@ -568,7 +549,8 @@ fn select_auto(candidates: &[GpuCandidate]) -> Result<&GpuCandidate> {
 
 fn select_high_performance(candidates: &[GpuCandidate]) -> Result<&GpuCandidate> {
     // Force dedicated GPUs only
-    candidates.iter()
+    candidates
+        .iter()
         .filter(|c| matches!(c.gpu_type, GpuType::Dedicated { .. }))
         .max_by_key(|c| c.score)
         .or_else(|| candidates.first()) // Fallback to any GPU
@@ -577,7 +559,8 @@ fn select_high_performance(candidates: &[GpuCandidate]) -> Result<&GpuCandidate>
 
 fn select_power_efficient(candidates: &[GpuCandidate]) -> Result<&GpuCandidate> {
     // Prefer integrated, then mobile, then desktop
-    candidates.iter()
+    candidates
+        .iter()
         .min_by_key(|c| match c.mobility {
             GpuMobility::Integrated => 0,
             GpuMobility::Mobile => 1,
@@ -587,10 +570,14 @@ fn select_power_efficient(candidates: &[GpuCandidate]) -> Result<&GpuCandidate> 
         .ok_or_else(|| anyhow::anyhow!("No power-efficient GPU found"))
 }
 
-fn select_specific<'a>(candidates: &'a [GpuCandidate], target_name: &str) -> Result<&'a GpuCandidate> {
+fn select_specific<'a>(
+    candidates: &'a [GpuCandidate],
+    target_name: &str,
+) -> Result<&'a GpuCandidate> {
     let target_lower = target_name.to_lowercase();
-    
-    candidates.iter()
+
+    candidates
+        .iter()
         .find(|c| c.info.device_name.to_lowercase().contains(&target_lower))
         .or_else(|| candidates.first()) // Fallback to best available
         .ok_or_else(|| anyhow::anyhow!("Specific GPU '{}' not found", target_name))
@@ -601,17 +588,30 @@ fn log_available_gpus(candidates: &[GpuCandidate]) {
     for (i, candidate) in candidates.iter().enumerate() {
         let dedicated_mb = candidate.info.dedicated_memory / (1024 * 1024);
         let shared_mb = candidate.info.shared_memory / (1024 * 1024);
-        
+
         let gpu_type_str = match &candidate.gpu_type {
-            GpuType::Dedicated { vendor, memory_mb: _ } => {
-                format!("Dedicated {:?} ({}MB VRAM, {}MB shared)", vendor, dedicated_mb, shared_mb)
+            GpuType::Dedicated {
+                vendor,
+                memory_mb: _,
+            } => {
+                format!(
+                    "Dedicated {:?} ({}MB VRAM, {}MB shared)",
+                    vendor, dedicated_mb, shared_mb
+                )
             }
             GpuType::Integrated { vendor } => {
                 format!("Integrated {:?} ({}MB shared)", vendor, shared_mb)
             }
         };
-        log::info!("  {}: {} - {} {:?} (Score: {}) [VID:{:#06X} DID:{:#06X}]", 
-                   i, candidate.info.device_name, gpu_type_str, candidate.mobility, 
-                   candidate.score, candidate.info.vendor_id, candidate.info.device_id);
+        log::info!(
+            "  {}: {} - {} {:?} (Score: {}) [VID:{:#06X} DID:{:#06X}]",
+            i,
+            candidate.info.device_name,
+            gpu_type_str,
+            candidate.mobility,
+            candidate.score,
+            candidate.info.vendor_id,
+            candidate.info.device_id
+        );
     }
 }

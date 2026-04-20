@@ -2173,27 +2173,37 @@ fn open_local_file(
     cx: &mut Context<Workspace>,
 ) {
     let project = workspace.project().clone();
-    let worktree = project
+    let worktrees: Vec<_> = project
         .read(cx)
         .visible_worktrees(cx)
-        .find_map(|tree| tree.read(cx).root_entry()?.is_dir().then_some(tree));
-    if let Some(worktree) = worktree {
-        let tree_id = worktree.read(cx).id();
+        .filter(|tree| tree.read(cx).root_entry().is_some_and(|entry| entry.is_dir()))
+        .collect();
+    if let Some(first_worktree) = worktrees.first().cloned() {
         cx.spawn_in(window, async move |workspace, cx| {
-            // Check if the file actually exists on disk (even if it's excluded from worktree)
-            let file_exists = {
-                let full_path = worktree.read_with(cx, |tree, _| {
+            let fs = project.read_with(cx, |project, _| project.fs().clone());
+
+            // Prefer a worktree that already has the settings file on disk,
+            // falling back to the first visible worktree.
+            let mut worktree = first_worktree.clone();
+            let mut file_exists = false;
+            for candidate in &worktrees {
+                let full_path = candidate.read_with(cx, |tree, _| {
                     tree.abs_path().join(settings_relative_path.as_std_path())
                 });
-
-                let fs = project.read_with(cx, |project, _| project.fs().clone());
-
-                fs.metadata(&full_path)
+                let exists = fs
+                    .metadata(&full_path)
                     .await
                     .ok()
                     .flatten()
-                    .is_some_and(|metadata| !metadata.is_dir && !metadata.is_fifo)
-            };
+                    .is_some_and(|metadata| !metadata.is_dir && !metadata.is_fifo);
+                if exists {
+                    worktree = candidate.clone();
+                    file_exists = true;
+                    break;
+                }
+            }
+
+            let tree_id = worktree.read_with(cx, |tree, _| tree.id());
 
             if !file_exists {
                 if let Some(dir_path) = settings_relative_path.parent()

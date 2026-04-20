@@ -3753,7 +3753,7 @@ impl Project {
                 cx.emit(Event::WorktreeAdded(worktree.read(cx).id()));
                 self.emit_group_key_changed_if_needed(cx);
             }
-            WorktreeStoreEvent::WorktreeRemoved(_, id) => {
+            WorktreeStoreEvent::WorktreeRemoved(_, id, _) => {
                 cx.emit(Event::WorktreeRemoved(*id));
                 self.emit_group_key_changed_if_needed(cx);
             }

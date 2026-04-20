@@ -1,4 +1,5 @@
 pub mod project_panel_settings;
+mod settings_migration_picker;
 mod undo;
 mod utils;
 
@@ -36,7 +37,7 @@ use project::{
     Entry, EntryKind, Fs, GitEntry, GitEntryRef, GitTraversal, Project, ProjectEntryId,
     ProjectPath, Worktree, WorktreeId,
     git_store::{GitStoreEvent, RepositoryEvent, git_traversal::ChildEntriesGitIter},
-    project_settings::GoToDiagnosticSeverityFilter,
+    project_settings::{GoToDiagnosticSeverityFilter, has_local_settings, migrate_local_settings},
 };
 use project_panel_settings::ProjectPanelSettings;
 use rayon::slice::ParallelSliceMut;
@@ -3470,14 +3471,100 @@ impl ProjectPanel {
     fn remove_from_project(
         &mut self,
         _: &RemoveFromProject,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        for entry in self.effective_entries().iter() {
-            let worktree_id = entry.worktree_id;
-            self.project
-                .update(cx, |project, cx| project.remove_worktree(worktree_id, cx));
+        let worktree_ids: Vec<WorktreeId> = self
+            .effective_entries()
+            .iter()
+            .map(|entry| entry.worktree_id)
+            .collect();
+        if worktree_ids.is_empty() {
+            return;
         }
+
+        let project = self.project.clone();
+        let worktree_info: Vec<(WorktreeId, Arc<Path>)> = {
+            let project = project.read(cx);
+            worktree_ids
+                .iter()
+                .filter_map(|id| {
+                    let worktree = project.worktree_for_id(*id, cx)?;
+                    Some((*id, worktree.read(cx).abs_path()))
+                })
+                .collect()
+        };
+
+        let remaining_worktree_paths: Vec<Arc<Path>> = {
+            let project = project.read(cx);
+            project
+                .worktrees(cx)
+                .filter(|tree| {
+                    let id = tree.read(cx).id();
+                    !worktree_ids.contains(&id)
+                })
+                .map(|tree| tree.read(cx).abs_path())
+                .collect()
+        };
+
+        let fs = project.read(cx).fs().clone();
+
+        let workspace = self.workspace.clone();
+        cx.spawn_in(window, async move |panel, cx| {
+            let mut worktrees_with_settings = Vec::new();
+            for (worktree_id, abs_path) in &worktree_info {
+                if has_local_settings(&fs, abs_path).await {
+                    worktrees_with_settings.push((*worktree_id, abs_path.clone()));
+                }
+            }
+
+            if !worktrees_with_settings.is_empty() && !remaining_worktree_paths.is_empty() {
+                let answer = cx.update(|window, cx| {
+                    window.prompt(
+                        PromptLevel::Info,
+                        "This folder contains project settings (.zed). Copy them to another folder in the workspace?",
+                        None,
+                        &["Copy Settings", "Don't Copy"],
+                        cx,
+                    )
+                })?;
+
+                if answer.await.ok() == Some(0) {
+                    let target = if remaining_worktree_paths.len() == 1 {
+                        Some(remaining_worktree_paths[0].clone())
+                    } else {
+                        let (sender, receiver) = futures::channel::oneshot::channel();
+                        let paths = remaining_worktree_paths.clone();
+                        workspace.update_in(cx, |workspace, window, cx| {
+                            workspace.toggle_modal(window, cx, |window, cx| {
+                                settings_migration_picker::SettingsMigrationModal::new(
+                                    paths, sender, window, cx,
+                                )
+                            });
+                        })?;
+                        receiver.await.ok()
+                    };
+
+                    if let Some(target_path) = target {
+                        let target_slice = [target_path];
+                        for (_worktree_id, abs_path) in &worktrees_with_settings {
+                            migrate_local_settings(&fs, abs_path, &target_slice).await;
+                        }
+                    }
+                }
+            }
+
+            for (worktree_id, _) in &worktree_info {
+                panel.update(cx, |panel, cx| {
+                    panel.project.update(cx, |project, cx| {
+                        project.remove_worktree(*worktree_id, cx);
+                    });
+                })?;
+            }
+
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
     }
 
     fn file_abs_paths_to_diff(&self, cx: &Context<Self>) -> Option<(PathBuf, PathBuf)> {

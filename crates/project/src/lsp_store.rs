@@ -4448,7 +4448,7 @@ impl LspStore {
                 })
                 .detach()
             }
-            WorktreeStoreEvent::WorktreeRemoved(_, id) => self.remove_worktree(*id, cx),
+            WorktreeStoreEvent::WorktreeRemoved(_, id, _) => self.remove_worktree(*id, cx),
             WorktreeStoreEvent::WorktreeUpdateSent(worktree) => {
                 worktree.update(cx, |worktree, _cx| self.send_diagnostic_summaries(worktree));
             }

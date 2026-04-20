@@ -1464,7 +1464,7 @@ impl GitStore {
                 );
                 self.local_worktree_git_repos_changed(worktree, changed_repos, cx);
             }
-            WorktreeStoreEvent::WorktreeRemoved(_entity_id, worktree_id) => {
+            WorktreeStoreEvent::WorktreeRemoved(_entity_id, worktree_id, _) => {
                 let repos_without_worktree: Vec<RepositoryId> = self
                     .worktree_ids
                     .iter_mut()

@@ -27,7 +27,7 @@ use buffer_diff::{
 };
 use collections::{BTreeSet, HashMap, HashSet};
 use encoding_rs;
-use fs::{FakeFs, PathEventKind};
+use fs::{FakeFs, Fs, PathEventKind};
 use futures::{StreamExt, future};
 use git::{
     GitHostingProviderRegistry,
@@ -12436,6 +12436,181 @@ async fn test_initial_scan_complete(cx: &mut gpui::TestAppContext) {
             "Expected 2 repositories in GitStore"
         );
     });
+}
+
+#[gpui::test]
+async fn test_has_local_settings(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "with_settings": {
+                ".zed": {
+                    "settings.json": r#"{"tab_size": 8}"#
+                },
+                "file.rs": "fn a() {}",
+            },
+            "without_settings": {
+                "file.rs": "fn b() {}",
+            }
+        }),
+    )
+    .await;
+
+    let fs: Arc<dyn Fs> = fs;
+    assert!(
+        project::project_settings::has_local_settings(
+            &fs,
+            path!("/root/with_settings").as_ref()
+        )
+        .await
+    );
+    assert!(
+        !project::project_settings::has_local_settings(
+            &fs,
+            path!("/root/without_settings").as_ref()
+        )
+        .await
+    );
+}
+
+#[gpui::test]
+async fn test_migrate_local_settings(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "worktree_a": {
+                ".zed": {
+                    "settings.json": r#"{"tab_size": 8}"#,
+                    "tasks.json": r#"[{"label": "build"}]"#
+                },
+                "file.rs": "fn a() {}",
+            },
+            "worktree_b": {
+                "file.rs": "fn b() {}",
+            }
+        }),
+    )
+    .await;
+
+    let fs: Arc<dyn Fs> = fs;
+    let target_paths: Vec<Arc<Path>> = vec![Arc::from(path!("/root/worktree_b").as_ref())];
+
+    project::project_settings::migrate_local_settings(
+        &fs,
+        path!("/root/worktree_a").as_ref(),
+        &target_paths,
+    )
+    .await;
+
+    let migrated_settings = fs.load(path!("/root/worktree_b/.zed/settings.json").as_ref()).await;
+    assert!(migrated_settings.is_ok());
+    assert_eq!(migrated_settings.unwrap(), r#"{"tab_size": 8}"#);
+
+    let migrated_tasks = fs.load(path!("/root/worktree_b/.zed/tasks.json").as_ref()).await;
+    assert!(migrated_tasks.is_ok());
+    assert_eq!(migrated_tasks.unwrap(), r#"[{"label": "build"}]"#);
+}
+
+#[gpui::test]
+async fn test_migrate_local_settings_does_not_overwrite(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "worktree_a": {
+                ".zed": {
+                    "settings.json": r#"{"tab_size": 8}"#
+                },
+                "file.rs": "fn a() {}",
+            },
+            "worktree_b": {
+                ".zed": {
+                    "settings.json": r#"{"tab_size": 2}"#
+                },
+                "file.rs": "fn b() {}",
+            }
+        }),
+    )
+    .await;
+
+    let fs: Arc<dyn Fs> = fs;
+    let target_paths: Vec<Arc<Path>> = vec![Arc::from(path!("/root/worktree_b").as_ref())];
+
+    project::project_settings::migrate_local_settings(
+        &fs,
+        path!("/root/worktree_a").as_ref(),
+        &target_paths,
+    )
+    .await;
+
+    let settings = fs.load(path!("/root/worktree_b/.zed/settings.json").as_ref()).await;
+    assert!(settings.is_ok());
+    assert_eq!(
+        settings.unwrap(),
+        r#"{"tab_size": 2}"#,
+        "worktree_b's settings should not be overwritten"
+    );
+}
+
+#[gpui::test]
+async fn test_settings_not_auto_migrated_on_worktree_removal(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "worktree_a": {
+                ".zed": {
+                    "settings.json": r#"{"tab_size": 8}"#
+                },
+                "file.rs": "fn a() {}",
+            },
+            "worktree_b": {
+                "file.rs": "fn b() {}",
+            }
+        }),
+    )
+    .await;
+
+    let project = Project::test(
+        fs.clone(),
+        [
+            path!("/root/worktree_a").as_ref(),
+            path!("/root/worktree_b").as_ref(),
+        ],
+        cx,
+    )
+    .await;
+
+    cx.executor().run_until_parked();
+
+    let worktree_a_id = cx.update(|cx| {
+        let worktrees: Vec<_> = project.read(cx).worktrees(cx).collect();
+        assert_eq!(worktrees.len(), 2);
+        worktrees[0].read(cx).id()
+    });
+
+    project.update(cx, |project, cx| {
+        project.remove_worktree(worktree_a_id, cx);
+    });
+
+    cx.executor().run_until_parked();
+
+    // Settings should NOT be automatically migrated — migration requires user confirmation
+    let result = fs.load(path!("/root/worktree_b/.zed/settings.json").as_ref()).await;
+    assert!(
+        result.is_err(),
+        "settings should not be auto-migrated on worktree removal"
+    );
 }
 
 pub fn init_test(cx: &mut gpui::TestAppContext) {

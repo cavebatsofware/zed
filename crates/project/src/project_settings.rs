@@ -2,7 +2,7 @@ use anyhow::Context as _;
 use collections::HashMap;
 use context_server::ContextServerCommand;
 use dap::adapters::DebugAdapterName;
-use fs::Fs;
+use fs::{CopyOptions, Fs};
 use futures::StreamExt as _;
 use git::repository::DEFAULT_WORKTREE_DIRECTORY;
 use gpui::{AsyncApp, BorrowAppContext, Context, Entity, EventEmitter, Subscription, Task};
@@ -26,7 +26,7 @@ use settings::{
     LocalSettingsPath, RegisterSetting, SemanticTokenRules, Settings, SettingsLocation,
     SettingsStore, parse_json_with_comments, watch_config_file,
 };
-use std::{cell::OnceCell, collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{cell::OnceCell, collections::BTreeMap, path::{Path, PathBuf}, sync::Arc, time::Duration};
 use task::{DebugTaskFile, TaskTemplates, VsCodeDebugTaskFile, VsCodeTaskFile};
 use util::{ResultExt, rel_path::RelPath, serde::default_true};
 use worktree::{PathChange, UpdatedEntriesSet, Worktree, WorktreeId};
@@ -1076,7 +1076,7 @@ impl SettingsObserver {
                     }
                 })
                 .detach(),
-            WorktreeStoreEvent::WorktreeRemoved(_, worktree_id) => {
+            WorktreeStoreEvent::WorktreeRemoved(_, worktree_id, _) => {
                 cx.update_global::<SettingsStore, _>(|store, cx| {
                     store.clear_local_settings(*worktree_id, cx).log_err();
                 });
@@ -1508,6 +1508,83 @@ impl SettingsObserver {
                     .ok();
             }
         })
+    }
+}
+
+/// Checks whether the given worktree path has any `.zed/` settings files on disk.
+pub async fn has_local_settings(fs: &Arc<dyn Fs>, worktree_abs_path: &Path) -> bool {
+    let settings_files = [
+        local_settings_file_relative_path(),
+        local_tasks_file_relative_path(),
+        local_debug_file_relative_path(),
+    ];
+    for relative_path in settings_files {
+        let path = worktree_abs_path.join(relative_path.as_std_path());
+        let exists = fs
+            .metadata(&path)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|m| !m.is_dir);
+        if exists {
+            return true;
+        }
+    }
+    false
+}
+
+/// Copies `.zed/` settings files from the source worktree path to the first
+/// target worktree that does not already have each file.
+pub async fn migrate_local_settings(
+    fs: &Arc<dyn Fs>,
+    source_abs_path: &Path,
+    target_worktree_paths: &[Arc<Path>],
+) {
+    let settings_files = [
+        local_settings_file_relative_path(),
+        local_tasks_file_relative_path(),
+        local_debug_file_relative_path(),
+    ];
+
+    for relative_path in settings_files {
+        let source = source_abs_path.join(relative_path.as_std_path());
+        let source_exists = fs
+            .metadata(&source)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|m| !m.is_dir);
+        if !source_exists {
+            continue;
+        }
+
+        for target_worktree_path in target_worktree_paths {
+            let target = target_worktree_path.join(relative_path.as_std_path());
+            let target_exists = fs
+                .metadata(&target)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|m| !m.is_dir);
+            if target_exists {
+                continue;
+            }
+
+            if let Some(parent) = target.parent() {
+                fs.create_dir(parent).await.log_err();
+            }
+            fs.copy_file(
+                &source,
+                &target,
+                CopyOptions {
+                    overwrite: false,
+                    ignore_if_exists: true,
+                },
+            )
+            .await
+            .log_err();
+            break;
+        }
     }
 }
 

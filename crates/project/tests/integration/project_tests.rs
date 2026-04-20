@@ -12505,6 +12505,7 @@ async fn test_migrate_local_settings(cx: &mut gpui::TestAppContext) {
         &fs,
         path!("/root/worktree_a").as_ref(),
         &target_paths,
+        false,
     )
     .await;
 
@@ -12548,6 +12549,7 @@ async fn test_migrate_local_settings_does_not_overwrite(cx: &mut gpui::TestAppCo
         &fs,
         path!("/root/worktree_a").as_ref(),
         &target_paths,
+        false,
     )
     .await;
 
@@ -12558,6 +12560,45 @@ async fn test_migrate_local_settings_does_not_overwrite(cx: &mut gpui::TestAppCo
         r#"{"tab_size": 2}"#,
         "worktree_b's settings should not be overwritten"
     );
+}
+
+#[gpui::test]
+async fn test_migrate_local_settings_overwrite_does_not_skip(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "worktree_a": {
+                ".zed": {
+                    "settings.json": r#"{"tab_size": 8}"#
+                },
+                "file.rs": "fn a() {}",
+            },
+            "worktree_b": {
+                ".zed": {},
+                "file.rs": "fn b() {}",
+            }
+        }),
+    )
+    .await;
+
+    let fs: Arc<dyn Fs> = fs;
+    let target_paths: Vec<Arc<Path>> = vec![Arc::from(path!("/root/worktree_b").as_ref())];
+
+    // With overwrite=true and no existing target file, the copy should still succeed
+    project::project_settings::migrate_local_settings(
+        &fs,
+        path!("/root/worktree_a").as_ref(),
+        &target_paths,
+        true,
+    )
+    .await;
+
+    let settings = fs.load(path!("/root/worktree_b/.zed/settings.json").as_ref()).await;
+    assert!(settings.is_ok());
+    assert_eq!(settings.unwrap(), r#"{"tab_size": 8}"#);
 }
 
 #[gpui::test]

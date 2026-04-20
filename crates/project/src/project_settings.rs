@@ -1535,10 +1535,12 @@ pub async fn has_local_settings(fs: &Arc<dyn Fs>, worktree_abs_path: &Path) -> b
 
 /// Copies `.zed/` settings files from the source worktree path to the first
 /// target worktree that does not already have each file.
+/// When `overwrite` is true, existing files in the target are replaced.
 pub async fn migrate_local_settings(
     fs: &Arc<dyn Fs>,
     source_abs_path: &Path,
     target_worktree_paths: &[Arc<Path>],
+    overwrite: bool,
 ) {
     let settings_files = [
         local_settings_file_relative_path(),
@@ -1566,7 +1568,7 @@ pub async fn migrate_local_settings(
                 .ok()
                 .flatten()
                 .is_some_and(|m| !m.is_dir);
-            if target_exists {
+            if target_exists && !overwrite {
                 continue;
             }
 
@@ -1577,8 +1579,8 @@ pub async fn migrate_local_settings(
                 &source,
                 &target,
                 CopyOptions {
-                    overwrite: false,
-                    ignore_if_exists: true,
+                    overwrite,
+                    ignore_if_exists: !overwrite,
                 },
             )
             .await

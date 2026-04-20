@@ -3500,8 +3500,9 @@ impl ProjectPanel {
             project
                 .worktrees(cx)
                 .filter(|tree| {
-                    let id = tree.read(cx).id();
-                    !worktree_ids.contains(&id)
+                    let tree = tree.read(cx);
+                    let is_dir = tree.root_entry().is_some_and(|entry| entry.is_dir());
+                    is_dir && !worktree_ids.contains(&tree.id())
                 })
                 .map(|tree| tree.read(cx).abs_path())
                 .collect()
@@ -3546,23 +3547,31 @@ impl ProjectPanel {
                     };
 
                     if let Some(target_path) = target {
+                        let overwrite =
+                            if has_local_settings(&fs, &target_path).await {
+                                let answer = cx.update(|window, cx| {
+                                    window.prompt(
+                                        PromptLevel::Warning,
+                                        "The selected folder already has project settings. Overwrite them?",
+                                        None,
+                                        &["Overwrite", "Keep Existing"],
+                                        cx,
+                                    )
+                                })?;
+                                answer.await.ok() == Some(0)
+                            } else {
+                                false
+                            };
+
                         let target_slice = [target_path];
                         for (_worktree_id, abs_path) in &worktrees_with_settings {
-                            migrate_local_settings(&fs, abs_path, &target_slice).await;
+                            migrate_local_settings(&fs, abs_path, &target_slice, overwrite).await;
                         }
                     }
                 }
             }
 
-            for (worktree_id, _) in &worktree_info {
-                panel.update(cx, |panel, cx| {
-                    panel.project.update(cx, |project, cx| {
-                        project.remove_worktree(*worktree_id, cx);
-                    });
-                })?;
-            }
-
-            anyhow::Ok(())
+            remove_worktrees(&panel, &worktree_info, cx)
         })
         .detach_and_log_err(cx);
     }
@@ -7452,6 +7461,21 @@ fn git_status_indicator(git_status: GitSummary) -> Option<(&'static str, Color)>
         return Some(("A", Color::Created));
     }
     None
+}
+
+fn remove_worktrees(
+    panel: &WeakEntity<ProjectPanel>,
+    worktree_info: &[(WorktreeId, Arc<Path>)],
+    cx: &mut gpui::AsyncWindowContext,
+) -> anyhow::Result<()> {
+    for (worktree_id, _) in worktree_info {
+        panel.update(cx, |panel, cx| {
+            panel.project.update(cx, |project, cx| {
+                project.remove_worktree(*worktree_id, cx);
+            });
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

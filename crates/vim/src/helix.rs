@@ -163,7 +163,7 @@ impl Vim {
                         // right-expansion (below) includes the last char without
                         // spilling into the newline.
                         Motion::EndOfLine { .. } => {
-                            let (point, _goal) = motion
+                            let (point, goal) = motion
                                 .move_point(
                                     map,
                                     current_head,
@@ -172,10 +172,7 @@ impl Vim {
                                     &text_layout_details,
                                 )
                                 .unwrap_or((current_head, selection.goal));
-                            (
-                                movement::saturating_left(map, point),
-                                SelectionGoal::None,
-                            )
+                            (movement::saturating_left(map, point), goal)
                         }
                         // Going to next word start is special cased
                         // since Vim differs from Helix in that motion
